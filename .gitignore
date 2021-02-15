@@ -1,3 +1,14 @@
+.env
+env/
+
+# Ignore cache files
+cache/**/*.json
+cache/**/*.yaml
+
+##
+## Default python .gitignore
+##
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
