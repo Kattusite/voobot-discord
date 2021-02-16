@@ -2,8 +2,8 @@
 env/
 
 # Ignore cache files
-*.yaml
-*.yml
+cache/*.json
+cache/*.yaml
 
 ##
 ## Default python .gitignore
