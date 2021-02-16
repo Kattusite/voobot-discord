@@ -10,7 +10,7 @@ import asyncio
 import logging
 logging.basicConfig(level=logging.INFO)
 
-from .emojistats import EmojiStats
+from .progressbar import ProgressBar
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,12 @@ class VooBot(commands.Bot):
         self.register_cogs()
 
     def register_cogs(self):
-        print('foo')
         logger.info('Registering cogs...')
-        self.add_cog(EmojiStats(self))
+        self.load_extension('voobot.emojistats')
+        self.load_extension('voobot.greetings')
+
+    def progress_bar(self, msg, **kwargs):
+        return ProgressBar(self, msg, **kwargs)
 
 
 """
