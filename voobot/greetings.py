@@ -12,5 +12,16 @@ class Greetings(commands.Cog):
     async def gnite(self, ctx):
         await ctx.send(f'Good night {ctx.author}')
 
+    @commands.command()
+    async def monke(self, ctx):
+        if ctx.author.name == "JPirate":
+            await ctx.send('🍓')
+            return
+        await ctx.send('🦍')
+
+    @commands.command()
+    async def monkw(self, ctx):
+        await ctx.send(':jajreen:')
+
 def setup(bot):
     bot.add_cog(Greetings(bot))

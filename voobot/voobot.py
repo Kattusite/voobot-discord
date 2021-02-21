@@ -29,7 +29,6 @@ class VooBot(commands.Bot):
     def progress_bar(self, msg, **kwargs):
         return ProgressBar(self, msg, **kwargs)
 
-
 """
     @self.client.event
     async def on_ready():
