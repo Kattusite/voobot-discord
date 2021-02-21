@@ -5,6 +5,10 @@ logger = logging.getLogger(__name__)
 
 
 # By convention, the last symbol represents 100%, so we might repeat a bit..
+# TODO: Make these tuples (list, final_state) instead to allow less jank and better customizability
+# QUESTION: Do we want to couple the "done" emoji and "loading" emoji, eg in a tuple,
+#           or does it make more sense to specify it separately?
+#           My suspicion is the latter, add a `final_state` param instead of making a tuple
 MOONS = "🌑🌒🌓🌔🌕🌖🌗🌘🌑🌒🌓🌔🌕"
 
 class ProgressBar():
