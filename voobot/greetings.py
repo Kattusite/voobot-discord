@@ -14,14 +14,12 @@ class Greetings(commands.Cog):
 
     @commands.command()
     async def monke(self, ctx):
-        if ctx.author.name == "JPirate":
-            await ctx.send('🍓')
-            return
-        await ctx.send('🦍')
+        msg = '🦍' if ctx.author.id != 191064515541073931 else '🍓'
+        await ctx.send(msg)
 
     @commands.command()
     async def monkw(self, ctx):
-        await ctx.send(':jajreen:')
+        await ctx.send('<:jajreen:691777761043284009>')
 
 def setup(bot):
     bot.add_cog(Greetings(bot))
