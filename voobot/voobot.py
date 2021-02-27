@@ -18,11 +18,14 @@ class VooBot(commands.Bot):
     """ The discord Bot functionality. """
 
     def __init__(self, command_prefix):
-        super().__init__(command_prefix)
+        intents = discord.Intents.default()
+        intents.members = True
+        super().__init__(command_prefix, intents=intents)
         self.register_cogs()
 
     def register_cogs(self):
         logger.info('Registering cogs...')
+        self.load_extension('voobot.cache')
         self.load_extension('voobot.emojistats')
         self.load_extension('voobot.greetings')
 

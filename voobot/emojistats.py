@@ -8,11 +8,13 @@ import asyncio
 import datetime
 from collections import defaultdict, deque
 import functools
+import logging
 import operator
 import os
 import time
 
-import logging
+from . import progressbar # Imported for its constants (TYPING, ...)
+
 logger = logging.getLogger(__name__)
 
 ###########################################################
@@ -26,10 +28,14 @@ YMD_FORMAT = '%Y-%m-%d'
 
 def dttos(dt, fmt=DATETIME_FORMAT):
     """ Convert the provided datetime to a string. """
+    if dt is None:
+        return None
     return dt.strftime(fmt)
 
 def stodt(s, fmt=DATETIME_FORMAT):
     """ Convert the provided string to a datetime. """
+    if not s:
+        return None
     return datetime.datetime.strptime(s, fmt)
 
 
@@ -48,18 +54,24 @@ class EmojiStats(commands.Cog):
                                 indent=2,
                                 ensure_ascii=False)
 
-        # TODO: Consider a new table mapping channel ID to server?
+        # Initialize / load DB tables
         self.cache = self.db.table('message_cache')
         self.channels = self.db.table('channels')
+        self.users = self.db.table('users')
+        self.emoji = self.db.table('emoji')
 
     def get_users_by_name(self, ctx, name):
         """ Return a list of users whose (nick)names are a full or partial match for name. """
-        # BUG: This just literally doesn't work at all for some reason.
-        #       guild.members just shows the bot user???
-        #       u.name = None ???
-        #       same for nick ???
-        logger.info(ctx.guild.members)
-        return [u for u in ctx.guild.members if name.lower() in u.name.lower() or name.lower() in u.nick.lower()]
+        name = name.lower()
+        users = []
+        for u in ctx.guild.members:
+            if u.name and name in u.name.lower():
+                users.append(u)
+                continue
+            if u.nick and name in u.nick.lower():
+                users.append(u)
+                continue
+        return users
 
     def get_channel_id_by_name(self, ctx, channel_name):
         """ Return the ID of the channel with the name from the current ctx's guild. """
@@ -75,7 +87,10 @@ class EmojiStats(commands.Cog):
             logger,warning(f'Ambiguous match for channel {channel_name} in guild {ctx.guild.id}')
         return channels[0]['id']
 
-    async def rescan_channel(self, ctx, channel, lookback_num=250,
+    async def rescan_channel(self,
+                             ctx: discord.ext.commands.Context,
+                             channel: discord.TextChannel,
+                             lookback_num=250,
                              lookback_time=datetime.timedelta(days=7),
                              force_sentinel=None):
         """
@@ -90,15 +105,16 @@ class EmojiStats(commands.Cog):
         invalidated (i.e. overwritten by newer data).
 
         The sentinel is chosen to be the earlier of:
-        1) the datetime of the `lookback_num`'th most recent message, OR
-        2) the datetime occurring `lookback_time` before the most recent message.
+        1) the datetime of the `lookback_num`'th most recent message in the channel, OR
+        2) the datetime occurring `lookback_time` before the most recent message in the channel.
 
         WARNING: The sentinel is an imperfect heuristic; in particular it
                  assumes that messages will never be reacted to again once
                  they become old enough. (i.e. no "necro" reactions).
 
-        TODO: This doesn't yet include messages that are themselves emoji,
-              or that include emoji in the body
+        TODO: The rescan currently only detects reactions to messages.
+              It will not detect messages that contain emoji in the body,
+              although it would be nice to track these occurrences as well.
 
         Args:
             ctx: The context from which the rescan was requested.
@@ -128,7 +144,7 @@ class EmojiStats(commands.Cog):
         if force_sentinel is not None:
             sentinel_datetime = force_sentinel
 
-        async def insert_record(msg):
+        async def insert_message_record(msg):
             """ Insert a `Message` record into the cache. """
             Message = tinydb.Query()
             self.cache.upsert({
@@ -142,6 +158,34 @@ class EmojiStats(commands.Cog):
             reacts = {str(r): [user.id for user in await r.users().flatten()] for r in msg.reactions}
             self.cache.update(dbops.set('reacts', reacts), Message.id == msg.id)
 
+        def insert_emoji_record(msg):
+            """ Insert an `Emoji` record into the cache. """
+            Emoji = tinydb.Query()
+            for r in msg.reactions:
+                record = {}
+                # type(r) == Union[discord.Emoji, discord.PartialEmoji, str]
+                if type(r.emoji) == str:
+                    if len(r.emoji) > 2:
+                        logger.warning(f'found over-long unicode emoji {r.emoji}')
+                    # Build an integer representing the unicode code point.
+                    id = 0
+                    for i, c in enumerate(reversed(r.emoji)):
+                        id |= ord(c)
+                        if i < len(r.emoji) - 1:
+                            id <<= 16
+
+                    record['id']        = id
+                    record['name']      = r.emoji
+                    record['custom']    = False
+                else:
+                    record['id']            = r.emoji.id
+                    record['name']          = r.emoji.name
+                    record['custom']        = True
+                    record['url']           = str(r.emoji.url)
+                    record['discord_str']   = str(r.emoji)
+                    record['created_at']    = dttos(r.emoji.created_at)
+                self.emoji.upsert(record, Emoji.id == record['id'])
+
         since_str = "forever ago"
         if sentinel_datetime:
             since_str = sentinel_datetime.strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -153,7 +197,8 @@ class EmojiStats(commands.Cog):
         newest_msgs = deque(maxlen=lookback_num)
         async for msg in channel.history(limit=None, after=sentinel_datetime, oldest_first=True):
             if msg.reactions:
-                await insert_record(msg)
+                insert_emoji_record(msg)
+                await insert_message_record(msg)
             newest_msgs.append(msg)
 
         # Select and persist a new sentinel
@@ -172,6 +217,17 @@ class EmojiStats(commands.Cog):
         elapsed_time = time.time() - start_time
         logger.info(f'{channel.name} scan complete in {elapsed_time:.1f}s')
 
+    def rescan_users(self, ctx):
+        """ Rescan the users who are members of the ctx's guild. """
+        User = tinydb.Query()
+        for u in ctx.guild.members:
+            self.users.upsert({
+                'id':               u.id,
+                'name':             u.name,
+                'discriminator':    u.discriminator,
+                'nick':             u.nick,
+            }, User.id == u.id)
+
     @commands.command()
     async def rescan(self, ctx):
         if ctx.author.id != ctx.guild.owner_id:
@@ -181,8 +237,11 @@ class EmojiStats(commands.Cog):
 
         logger.info('initiating rescan...')
         msg = await ctx.send("Rescanning channels. This might take a while...")
+        logger.info('scanning users...')
+        self.rescan_users(ctx)
 
-        with self.bot.progress_bar(msg):
+        logger.info('scanning channels...')
+        with self.bot.progress_bar(msg, reacts=progressbar.TYPING):
             # await asyncio.sleep(5)
             scan_coros = [self.rescan_channel(ctx, c) for c in ctx.guild.text_channels]
             await asyncio.gather(*scan_coros)
@@ -204,55 +263,60 @@ class EmojiStats(commands.Cog):
     function.
     """
 
-    def query_by_channel(self, ctx, channel_name):
+    def query_by_channel(self, ctx, channel_name: str):
         """ Return a tinydb query for messages sent to a specific channel. """
         channel_id = self.get_channel_id_by_name(ctx, channel_name)
         return tinydb.Query().channel == channel_id
 
-    def query_by_author(self, ctx, author):
+    def query_by_author(self, ctx, author: str):
         """ Return a tinydb query for messages sent by a specific author. """
         user_ids = [u.id for u in self.get_users_by_name(ctx, author)]
         return tinydb.Query().author.test(lambda uid: uid in user_ids)
 
-    def query_by_reactor(self, ctx, reactor):
-        """ Return a tinydb query for messages reacted to by a specific user. """
+    def query_by_reactor(self, ctx, reactor: str):
+        """ Return a tinydb query for messages reacted to by a specific user.
+
+            Note: This filters by message, so the output will contain a list of
+            messages that definitely have reactions by the requested reactor,
+            and may also have other unrelated reactions.
+            This might not be the desired behavior for this function long-term.
+        """
         user_ids = [u.id for u in self.get_users_by_name(ctx, reactor)]
         def test_reactor(reacts):
             for user_id in user_ids:
-                if any([user_id in reactors for reactors in reacts]):
+                if any([user_id in reactors for reactors in reacts.values()]):
                     return True
             return False
+        return tinydb.Query().reacts.test(test_reactor)
 
-    def query_by_react(self, ctx, react):
+    def query_by_react(self, ctx, react: str):
         """ Return a tinydb query for messages reacted to with a specific react.
             Params:
                 react, a substring of the discord reaction string we'd like to find.
                 e.g. "pogg" would match against "<:poggers:0123456789>"
+
+            Note: This filters by *message*, so the output will contain a list of
+                  messages that definitely have the requested reaction, and may
+                  also have other unrelated reactions.
+                  In other words, it can be used to capture co-occurences of reacts.
         """
         def test_react(reacts):
             return any([react in r for r in reacts])
         return tinydb.Query().reacts.test(test_react)
 
-    def query_by_before(self, ctx, before_date):
+    def query_by_before(self, ctx, before_date: datetime.datetime):
         """ Return a tinydb query for messages sent before a specific date. """
         test_before = lambda dt_str: stodt(dt_str) < stodt(before_date, fmt=YMD_FORMAT)
         return tinydb.Query().datetime.test(test_before)
 
-    def query_by_after(self, ctx, after_date):
+    def query_by_after(self, ctx, after_date: datetime.datetime):
         """ Return a tinydb query for messages sent after a specific date. """
         test_after = lambda dt_str: stodt(dt_str) > stodt(after_date, fmt=YMD_FORMAT)
         return tinydb.Query().datetime.test(test_after)
 
-    def query_all(self):
-        """ Return a tinydb query that matches every entry.
-
-            This is used as the initializer for calls to reduce().
-        """
-        return tinydb.Query().id.exists()
-
     def query_message_cache(self, ctx, *args):
-        """ Search the message cache with the given directives, and return a
-            list of messages that match. """
+        """ Search the message cache with the given directives,
+            and return a list of messages that match. """
 
         directives = {
             'in': self.query_by_channel,
@@ -285,21 +349,35 @@ class EmojiStats(commands.Cog):
             queries.append(query)
 
         # Combine queries with & operator to match only those that satisfy all queries.
-        # If queries is empty, query_all() acts as the default, matching all messages.
-        merged_query = functools.reduce(operator.and_, queries, self.query_all())
+        # If queries is empty, noop() acts as the default, matching all messages.
+        logger.info(queries)
+        merged_query = functools.reduce(operator.and_, queries, tinydb.Query().noop())
 
         return self.cache.search(merged_query)
 
-    def collate_messages(self, ctx, messages, *args):
+    def collate_messages(self, ctx, messages, *args, strict_matching=False):
         """ Transform the provided list of messages into a clean set of results that
             can be easily displayed, per the format requested by args.
 
             By default, this format will be a dictionary mapping emoji to their
             aggregate number of occurrences across the entire set of messages.
         """
-        # TODO: Implement other collation formats.
+        # TODO: If strict matching is true, filter out only the specific reacts
+        #       on each message that were searched for by `args`,
+        #       rather than including all the reacts on all messages that matched.
+        #       (i.e. ignore/allow co-occurences.)
+        #
+        #       For example, if args includes "by:voobot", and strict_matching=True,
+        #       the collated list should not include any reactions by any user besides
+        #       voobot. Inversely, for strict_matching=False, the collated list could
+        #       include reactions by other users, so long as those reactions were
+        #       from messages that voobot also reacted to.
 
-        # Recall messages looks like this:
+        # TODO: Implement other collation formats, besides just a dictionary
+        #       mapping emoji to occurrence counts.
+        #       e.g. Map users to their most frequent reactions.
+
+        # messages looks like this:
         # [ {..., 'reacts': {'<:poggers:12345>': [uid, uid, uid], '👍': [uid, uid, uid]}}, ... ]
         collated = defaultdict(lambda: 0)
         for msg in messages:

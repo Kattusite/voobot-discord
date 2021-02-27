@@ -14,5 +14,7 @@ db = tinydb.TinyDB(op.join(CACHE_DIR,'cache.json'),
 
 channels = db.table('channels')
 cache = db.table('message_cache')
+users = db.table('users')
+emoji = db.table('emoji')
 
 Msg = tinydb.Query()
