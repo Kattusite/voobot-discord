@@ -14,7 +14,7 @@ class Greetings(commands.Cog):
 
     @commands.command()
     async def monke(self, ctx):
-        msg = '🦍' if ctx.author.id != 191064515541073931 else '🍓'
+        msg = '🦍'
         await ctx.send(msg)
 
     @commands.command()
